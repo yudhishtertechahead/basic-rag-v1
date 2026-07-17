@@ -32,15 +32,52 @@ logger = get_logger(__name__)
 # ─── System Prompt ────────────────────────────────────────────────────────────
 # This instructs the LLM on how to behave.
 # Tells it to: only use the provided context, admit when it doesn't know.
-SYSTEM_PROMPT = """You are a friendly and helpful HR and Compliance Assistant.
+SYSTEM_PROMPT = """\
+You are Aria, a precise and helpful HR Assistant for TechAhead. \
+Your sole purpose is to help employees understand company policies, benefits, and workplace guidelines \
+by using ONLY the information provided in the <context> block below.
 
-Rules:
-1. FOR POLICY QUESTIONS: If the user asks about company policies, rules, or HR matters, base your answer ONLY on the provided CONTEXT. Cite the source (e.g., "According to the HR Manual...").
-2. MISSING POLICY INFO: If they ask a policy question and the context doesn't contain the answer, say EXACTLY: "I don't have enough information in the provided policies to answer this. Please reach out to HR."
-3. CONVERSATIONAL CHAT: If the user makes small talk, asks general everyday questions, or says "Hi", answer them naturally and conversationally just like a normal AI assistant. 
-4. KEEP IT SHORT: Keep your answers concise and directly to the point. Avoid long paragraphs.
-5. FORMATTING: Keep answers clear. Use bullet points for lists and **bold** key terms.
-6. POINTS: Use bullet points 
+<instructions>
+
+## CORE RULE — Non-negotiable
+Your answers MUST be grounded exclusively in the provided <context>.
+Do NOT use your own training knowledge to answer policy, benefits, or HR questions.
+If the answer is not in the context, say so honestly and guide the user to HR.
+
+## BEHAVIOR BY QUERY TYPE
+
+### Type 1: Policy / HR Question (context IS relevant)
+- Answer directly and concisely — lead with the key fact first.
+- Include exact numbers, dates, amounts, and thresholds from the context. Never approximate.
+- Cite the source naturally: "As per the HR Manual..." or "The Leave Policy states..."
+- Use bullet points ONLY when listing 3 or more distinct items or steps.
+- For 1–2 item answers, use plain prose — no forced bullet lists.
+- Bold the single most important fact in the answer (amount, date, key rule).
+
+### Type 2: Policy / HR Question (context is NOT relevant or empty)
+- Do NOT fabricate, estimate, or guess from general knowledge.
+- Be honest but warm: "The provided policies don't cover this specifically."
+- Always end with a clear next step: "I'd recommend reaching out to HR at [hr@company.com] or your manager directly."
+
+### Type 3: Conversational / Small Talk ("Hi", "Thank you", "How are you?")
+- Respond naturally and briefly, like a friendly colleague.
+- No need to search policies. Just be warm and human.
+- Keep it to 1–2 sentences max.
+
+## FORMATTING
+- Never use headers (##) inside your answer — they feel like a document, not a conversation.
+- Never repeat or rephrase the user's question in your reply.
+- Never start with "Great question!", "Of course!", "Certainly!", or similar filler.
+- Keep total response length appropriate to the question — short questions deserve short answers.
+
+## TONE
+Warm, professional, and direct. Like a trusted HR colleague, not a legal document.
+
+</instructions>
+
+IMPORTANT REMINDER: Answer only from the <context>. \
+If the context does not contain the answer, say so and direct the user to HR. \
+Never invent policy details.
 """
 
 
@@ -71,34 +108,18 @@ def format_context(chunks: list[Document]) -> str:
     return "\n\n---\n\n".join(context_parts)
 
 
-def ask(question: str) -> dict:
-    """
-    Main RAG pipeline: takes a user question, retrieves relevant context,
-    and returns an LLM-generated answer grounded in your documents.
+def ask(question: str, llm_provider: str | None = None) -> dict:
+    import time
+    t0 = time.perf_counter()
 
-    Args:
-        question: The user's question as a plain string.
-
-    Returns:
-        A dict with:
-          - "answer": the LLM's response as a string
-          - "sources": list of source chunk metadata (file, page) for transparency
-
-    Pipeline:
-        question
-          → retrieve(question)          [Qdrant semantic search]
-          → format_context(chunks)      [build context string]
-          → build messages list         [system prompt + context + question]
-          → llm.invoke(messages)        [call LLM]
-          → return answer + sources
-    """
     logger.info("New question received: '%s'", question[:80])
 
     # ── Step 1: Retrieve top-3 relevant chunks from Qdrant ────────────────────
-    # Alternative: use a LangChain retriever object instead:
-    # vectorstore.as_retriever(search_kwargs={"k": 3}).invoke(question)
     logger.info("[Step 1/4] Retrieving top-3 chunks from Qdrant...")
+    t1 = time.perf_counter()
     chunks = retrieve(question, top_k=3)
+    t2 = time.perf_counter()
+    print(f"  [TIMING] Step 1 - Retrieval (embed query + Qdrant search): {t2-t1:.3f}s")
 
     if not chunks:
         logger.warning("No chunks retrieved — collection may be empty or not yet ingested")
@@ -107,27 +128,20 @@ def ask(question: str) -> dict:
             "sources": [],
         }
 
-    logger.info("[Step 1/4] ✔ Got %d chunk(s)", len(chunks))
+    logger.info("[Step 1/4] Got %d chunk(s)", len(chunks))
 
     # ── Step 2: Format chunks into a context string ───────────────────────────
-    logger.info("[Step 2/4] Formatting context from retrieved chunks...")
     context = format_context(chunks)
-    logger.debug("Context length: %d characters", len(context))
 
-    # ── Step 3: Build the prompt as a list of messages ───────────────────────
-    # LangChain uses a list of message objects: SystemMessage, HumanMessage, AIMessage
-    # Alternative: use PromptTemplate + ChatPromptTemplate for more structured templating
-    logger.info("[Step 3/4] Building prompt (system + context + question)...")
+    # ── Step 3: Build the prompt ──────────────────────────────────────────────
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=f"CONTEXT:\n{context}\n\nQUESTION: {question}"),
     ]
+    t3 = time.perf_counter()
+    print(f"  [TIMING] Step 2+3 - Context format + prompt build: {t3-t2:.3f}s")
 
-    # ── Step 4: Call the LLM (Gemini or Ollama based on .env) ────────────────
-    # get_llm() returns whichever model is configured — no change needed here
-    logger.info("[Step 4/4] Calling LLM...")
-    
-    # Console the exact final prompt that goes to the LLM for debugging
+    # ── Step 4: Call the LLM ──────────────────────────────────────────────────
     logger.debug(
         "=== FINAL PROMPT TO LLM ===\n"
         "SYSTEM PROMPT:\n%s\n\n"
@@ -135,39 +149,30 @@ def ask(question: str) -> dict:
         "===========================",
         SYSTEM_PROMPT, context, question
     )
-    
-    llm = get_llm()
-    response = llm.invoke(messages)
 
-    # response.content is the LLM's reply.
-    # Newer Gemini models return a list of content blocks: [{'type': 'text', 'text': '...'}]
-    # Older models / other providers return a plain string.
-    # We handle both cases here.
+    llm = get_llm(llm_provider)
+    response = llm.invoke(messages)
+    t4 = time.perf_counter()
+    print(f"  [TIMING] Step 4 - LLM generation ({llm_provider or 'default'}): {t4-t3:.3f}s")
+
     raw = response.content
     if isinstance(raw, list):
-        # Extract text from all text-type blocks and join them
         answer = " ".join(
             block["text"] for block in raw
             if isinstance(block, dict) and block.get("type") == "text"
         )
     else:
-        answer = str(raw)  # Already a string
+        answer = str(raw)
 
-    logger.info("[Step 4/4] LLM response received (%d chars)", len(answer))
-
-    # ── Step 5: Extract source metadata for the response ─────────────────────
     sources = [
         {
             "source": chunk.metadata.get("source", "Unknown"),
             "page": chunk.metadata.get("page", None),
-            "preview": chunk.page_content[:200] + "..."  # First 200 chars of chunk
+            "preview": chunk.page_content[:200] + "..."
         }
         for chunk in chunks
     ]
 
-    logger.debug("Sources returned: %s", [s["source"] for s in sources])
+    print(f"  [TIMING] Total end-to-end: {time.perf_counter()-t0:.3f}s")
 
-    return {
-        "answer": answer,
-        "sources": sources,
-    }
+    return {"answer": answer, "sources": sources}

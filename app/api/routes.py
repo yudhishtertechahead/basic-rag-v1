@@ -40,6 +40,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     """The JSON body expected by POST /chat"""
     question: str  # The user's question
+    llm_provider: str | None = None  # Optional override for the LLM ("google", "groq", "ollama")
 
 
 class ChatResponse(BaseModel):
@@ -144,6 +145,12 @@ def chat(request: ChatRequest):
     Alternative: This could use WebSockets for streaming responses
     so the user sees the answer token-by-token (like ChatGPT).
     """
+    # Print a clear visual separator so each question is easy to read in the terminal
+    provider_label = (request.llm_provider or settings.llm_provider).upper()
+    print(f"\n{' '*600}")
+    print(f"  NEW QUESTION [{provider_label}]")
+    print(f"  Q: {request.question[:80]}")
+    print(f"{' '*100}")
     logger.info("POST /chat | question='%s...'", request.question[:60])
 
     if not request.question.strip():
@@ -151,13 +158,15 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        result = ask(request.question)
+        result = ask(request.question, llm_provider=request.llm_provider)
         logger.info("POST /chat | answered successfully (%d source chunks)", len(result['sources']))
+        print(f"  DONE — {len(result['sources'])} source chunk(s) used")
+        print(f"{'='*60}\n")
 
         return ChatResponse(
             answer=result["answer"],
             sources=result["sources"],
-            llm_provider=settings.llm_provider,
+            llm_provider=request.llm_provider or settings.llm_provider,
         )
 
     except Exception as e:

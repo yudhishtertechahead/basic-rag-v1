@@ -21,6 +21,8 @@ Pipeline position:
   Query  → [this file: embed + search] → top-3 relevant chunks
 """
 
+from functools import lru_cache
+
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
@@ -32,7 +34,13 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Module-level cache for the vectorstore — initialized once, reused on every request.
+# Without this, QdrantVectorStore() makes a network round-trip to fetch collection
+# metadata EVERY request, wasting ~1.3 seconds each time.
+_vectorstore: QdrantVectorStore | None = None
 
+
+@lru_cache(maxsize=1)
 def get_embedding_model() -> HuggingFaceEmbeddings:
     """
     Returns the embedding model used to convert text into vectors.
@@ -47,6 +55,7 @@ def get_embedding_model() -> HuggingFaceEmbeddings:
     )
 
 
+@lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
     """
     Creates and returns a connection to Qdrant Cloud.
@@ -131,45 +140,28 @@ def store_chunks(chunks: list[Document]) -> None:
 def retrieve(query: str, top_k: int = 3) -> list[Document]:
     """
     Performs semantic search in Qdrant for the most relevant chunks.
-
-    Steps:
-      1. Embed the user's query using the same embedding model
-      2. Compare query vector against all stored chunk vectors
-      3. Return the top_k most similar chunks (by cosine similarity)
-
-    Args:
-        query: The user's question as plain text.
-        top_k: Number of chunks to retrieve (default: 3, as required by the project spec).
-
-    Returns:
-        List of the top_k most relevant Document chunks, each with source metadata.
-
-    Alternative retrieval strategies:
-    - MMR (Maximal Marginal Relevance): retrieves diverse results (avoids repetitive chunks)
-      Usage: vectorstore.as_retriever(search_type="mmr")
-    - Threshold-based: only return chunks above a similarity score
-      Usage: vectorstore.as_retriever(search_type="similarity_score_threshold", search_kwargs={"score_threshold": 0.7})
     """
-    client = get_qdrant_client()
-    embeddings = get_embedding_model()
+    import time
+    global _vectorstore
 
-    logger.debug("Connecting to Qdrant for retrieval (collection: %s)", settings.qdrant_collection)
+    ta = time.perf_counter()
+    if _vectorstore is None:
+        client = get_qdrant_client()
+        embeddings = get_embedding_model()
+        print("    [TIMING]   a) Building QdrantVectorStore for first time...")
+        _vectorstore = QdrantVectorStore(
+            client=client,
+            collection_name=settings.qdrant_collection,
+            embedding=embeddings,
+        )
+    tb = time.perf_counter()
+    print(f"    [TIMING]   a) Get/init vectorstore: {tb-ta:.3f}s")
 
-    # Connect to the existing collection for querying
-    vectorstore = QdrantVectorStore(
-        client=client,
-        collection_name=settings.qdrant_collection,
-        embedding=embeddings,
-    )
-
-    logger.debug("Running similarity search | query='%s...' | top_k=%d", query[:60], top_k)
-
-    # similarity_search embeds the query and finds nearest vectors
-    results = vectorstore.similarity_search(query, k=top_k)
+    # similarity_search: 1) embeds query on CPU  2) searches Qdrant over network
+    tc = time.perf_counter()
+    results = _vectorstore.similarity_search(query, k=top_k)
+    td = time.perf_counter()
+    print(f"    [TIMING]   b) similarity_search (embed + Qdrant network): {td-tc:.3f}s")
 
     logger.info("Retrieved %d chunk(s) for query", len(results))
-    for i, doc in enumerate(results, 1):
-        src = doc.metadata.get("source", "unknown")
-        logger.debug("  Chunk %d: %s — '%s...'", i, src, doc.page_content[:80])
-
     return results

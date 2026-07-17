@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>RAG Chatbot</title>
+  <!-- marked.js: converts LLM markdown (bold, bullets, etc.) to clean HTML -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -131,6 +133,20 @@
       font-size: 0.75rem;
       color: #6b7094;
     }
+
+    /* Markdown rendered inside bot bubble */
+    .msg.bot .bubble p        { margin-bottom: 0.5em; }
+    .msg.bot .bubble p:last-child { margin-bottom: 0; }
+    .msg.bot .bubble ul,
+    .msg.bot .bubble ol       { padding-left: 1.3em; margin-bottom: 0.5em; }
+    .msg.bot .bubble li       { margin-bottom: 0.2em; }
+    .msg.bot .bubble strong   { color: #c5caed; font-weight: 600; }
+    .msg.bot .bubble code     { background: #12141f; padding: 1px 5px; border-radius: 4px;
+                                font-family: monospace; font-size: 0.85em; color: #a5b4fc; }
+    .msg.bot .bubble h1,
+    .msg.bot .bubble h2,
+    .msg.bot .bubble h3       { font-size: 0.95rem; font-weight: 600; color: #c5caed;
+                                margin: 0.5em 0 0.3em; }
 
     .sources span {
       display: inline-block;
@@ -292,7 +308,13 @@
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = content;
+
+    // Render markdown so **bold**, bullet points etc. display properly
+    if (role === "bot") {
+      bubble.innerHTML = marked.parse(content || "");
+    } else {
+      bubble.textContent = content;
+    }
 
     // Add source chips for bot messages
     if (role === "bot" && sources.length > 0) {

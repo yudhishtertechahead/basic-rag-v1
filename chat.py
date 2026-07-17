@@ -27,10 +27,25 @@ DIM    = "\033[2m"
 RESET  = "\033[0m"
 
 
-def chat(question: str) -> dict:
+def strip_markdown(text: str) -> str:
+    """Convert LLM markdown to clean plain text for terminal display."""
+    import re
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # **bold** → bold
+    text = re.sub(r'\*(.+?)\*',     r'\1', text)   # *italic* → italic
+    text = re.sub(r'#{1,6}\s*',     '',    text)   # ### Heading → Heading
+    text = re.sub(r'`(.+?)`',       r'\1', text)   # `code` → code
+    text = re.sub(r'\n{3,}',        '\n\n', text)  # collapse triple blank lines
+    return text.strip()
+
+
+def chat(question: str, llm_provider: str) -> dict:
     """Sends the question to the FastAPI /chat endpoint and returns the result."""
     try:
-        response = requests.post(API_URL, json={"question": question}, timeout=60)
+        response = requests.post(
+            API_URL, 
+            json={"question": question, "llm_provider": llm_provider}, 
+            timeout=60
+        )
         response.raise_for_status()
         return response.json()
     except requests.exceptions.ConnectionError:
@@ -56,6 +71,19 @@ def print_banner():
 def main():
     print_banner()
 
+    # ── Ask user for LLM choice ────────────────────────────────────────────
+    print(f"{YELLOW}Choose your LLM provider:{RESET}")
+    print(f"  [1] Google Gemini (default)")
+    print(f"  [2] Groq")
+    choice = input(f"{YELLOW}Enter 1 or 2 [1]: {RESET}").strip()
+    
+    if choice == "2":
+        llm_provider = "groq"
+        print(f"\n{CYAN}Using Groq...{RESET}\n")
+    else:
+        llm_provider = "google"
+        print(f"\n{CYAN}Using Google Gemini...{RESET}\n")
+
     while True:
         # ── Get user input ─────────────────────────────────────────────────────
         try:
@@ -73,10 +101,11 @@ def main():
 
         # ── Call the API ───────────────────────────────────────────────────────
         print(f"{DIM}Thinking...{RESET}")
-        result = chat(question)
+        result = chat(question, llm_provider)
 
         # ── Print the answer ───────────────────────────────────────────────────
-        print(f"\n{BOLD}{CYAN}Bot:{RESET} {result['answer']}")
+        clean_answer = strip_markdown(result['answer'])
+        print(f"\n{BOLD}{CYAN}Bot:{RESET} {clean_answer}")
 
         # ── Print sources ──────────────────────────────────────────────────────
         sources = result.get("sources", [])

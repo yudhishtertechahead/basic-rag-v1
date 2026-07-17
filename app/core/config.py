@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     google_api_key: str
     google_model: str = "gemini-3.5-flash"
 
+    # ─── Groq (Fast API-based open-source LLMs) ───────────────────────────────
+    # Used when LLM_PROVIDER=groq
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
+
     # ─── Ollama (Local open-source LLM) ───────────────────────────────────────
     # Used when LLM_PROVIDER=ollama
     # Install Ollama from https://ollama.com and run: ollama pull llama3
@@ -31,7 +36,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
 
     # ─── LLM Provider Toggle ──────────────────────────────────────────────────
-    # Set to "google" or "ollama" in .env to switch between models
+    # Set to "google", "groq", or "ollama" in .env to switch between models
     # Alternative: you could also pass this as a query parameter in the API
     llm_provider: str = "google"
 
