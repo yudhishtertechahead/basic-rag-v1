@@ -271,7 +271,7 @@
 <script>
   // ── Config ────────────────────────────────────────────────────────────────
   // Must match the running FastAPI server address
-  const API_URL = "http://localhost:8000/chat";
+  const API_URL = "http://localhost:8000/chat/stream";
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const messagesEl = document.getElementById("messages");
@@ -371,7 +371,7 @@
     sendBtn.disabled = true;
     inputEl.disabled = true;
 
-    // Show thinking indicator
+    // Show thinking indicator briefly until first token arrives
     const thinkingEl = addThinking();
 
     try {
@@ -382,14 +382,42 @@
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || `Server error ${res.status}`);
+        // Non-streaming error path
+        let detail = `Server error ${res.status}`;
+        try { detail = (await res.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
       }
 
-      const data = await res.json();
-
+      // ── Streaming path ─────────────────────────────────────────────────────
+      // Remove thinking dots as soon as the stream opens (first byte received)
       thinkingEl.remove();
-      addMessage("bot", data.answer, data.sources || []);
+
+      // Create a bot bubble immediately — tokens will be appended into it live
+      if (emptyEl) emptyEl.remove();
+      const msgEl = document.createElement("div");
+      msgEl.className = "msg bot";
+      const avatarEl = document.createElement("div");
+      avatarEl.className = "avatar";
+      avatarEl.textContent = "AI";
+      const bubbleEl = document.createElement("div");
+      bubbleEl.className = "bubble";
+      msgEl.appendChild(avatarEl);
+      msgEl.appendChild(bubbleEl);
+      messagesEl.appendChild(msgEl);
+
+      // Read the stream chunk-by-chunk and append text as it arrives
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        fullText += decoder.decode(value, { stream: true });
+        // Re-render markdown on every chunk so formatting appears progressively
+        bubbleEl.innerHTML = marked.parse(fullText);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
 
     } catch (err) {
       thinkingEl.remove();

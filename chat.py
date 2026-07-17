@@ -16,7 +16,7 @@ import sys
 import requests
 
 # FastAPI server URL — must be running: uv run uvicorn main:app --reload
-API_URL = "http://localhost:8000/chat"
+API_URL = "http://localhost:8000/chat/stream"
 
 GREEN  = "\033[32m"
 CYAN   = "\033[36m"
@@ -38,25 +38,31 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
-def chat(question: str, llm_provider: str) -> dict:
-    """Sends the question to the FastAPI /chat endpoint and returns the result."""
+def chat(question: str, llm_provider: str) -> None:
+    """Streams the answer from /chat/stream and prints tokens as they arrive."""
     try:
-        response = requests.post(
-            API_URL, 
-            json={"question": question, "llm_provider": llm_provider}, 
-            timeout=60
-        )
-        response.raise_for_status()
-        return response.json()
+        with requests.post(
+            API_URL,
+            json={"question": question, "llm_provider": llm_provider},
+            timeout=60,
+            stream=True,          # ← keep connection open while tokens arrive
+        ) as response:
+            response.raise_for_status()
+            print(f"\n{BOLD}{CYAN}Bot:{RESET} ", end="", flush=True)
+            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+                if chunk:
+                    print(chunk, end="", flush=True)  # print each token as it arrives
+            print()  # newline after answer ends
+            return
     except requests.exceptions.ConnectionError:
         print(f"\n{RED}[ERROR] Cannot connect to the API server.{RESET}")
         print(f"{DIM}  Make sure the server is running:{RESET}")
         print(f"{YELLOW}  uv run uvicorn main:app --reload{RESET}\n")
         sys.exit(1)
     except requests.exceptions.Timeout:
-        return {"answer": "Request timed out. The LLM might be slow — try again.", "sources": []}
+        print(f"\n{RED}[ERROR] Request timed out. The LLM might be slow — try again.{RESET}\n")
     except Exception as e:
-        return {"answer": f"Error: {str(e)}", "sources": []}
+        print(f"\n{RED}[ERROR] {str(e)}{RESET}\n")
 
 
 def print_banner():
@@ -99,26 +105,9 @@ def main():
             print(f"\n{DIM}Goodbye!{RESET}\n")
             break
 
-        # ── Call the API ───────────────────────────────────────────────────────
+        # ── Call the API (streaming) ────────────────────────────────────────────
         print(f"{DIM}Thinking...{RESET}")
-        result = chat(question, llm_provider)
-
-        # ── Print the answer ───────────────────────────────────────────────────
-        clean_answer = strip_markdown(result['answer'])
-        print(f"\n{BOLD}{CYAN}Bot:{RESET} {clean_answer}")
-
-        # ── Print sources ──────────────────────────────────────────────────────
-        sources = result.get("sources", [])
-        if sources:
-            print(f"\n{DIM}Sources:{RESET}")
-            for i, src in enumerate(sources, 1):
-                source_name = src.get("source", "Unknown")
-                # Show just the filename, not the full path
-                source_name = source_name.split("\\")[-1].split("/")[-1]
-                page = src.get("page")
-                page_str = f" (page {page + 1})" if page is not None else ""
-                print(f"  {DIM}[{i}] {source_name}{page_str}{RESET}")
-
+        chat(question, llm_provider)
         print()  # blank line between turns
 
 

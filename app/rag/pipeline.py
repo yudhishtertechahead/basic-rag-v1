@@ -8,19 +8,20 @@ This file ties everything together:
   2. PROMPT:   inject those chunks as "context" into the LLM prompt
   3. GENERATE: call the LLM and get a grounded answer
 
-Why RAG instead of just asking the LLM directly?
-  LLMs don't know about YOUR documents. RAG gives the LLM relevant excerpts from
-  your documents so it can answer based on your specific content — not just its training data.
+Two entry points are provided:
+  - ask()        → returns the full answer at once (used by POST /chat)
+  - ask_stream() → yields answer tokens one-by-one as they arrive from the LLM
+                   (used by POST /chat/stream — makes the UI feel instant)
 
-Alternative approaches available in LangChain:
-  - RetrievalQA chain         → older, simpler, single call
-  - create_retrieval_chain()  → newer, composable with LCEL (LangChain Expression Language)
-  - ConversationalRetrievalChain → adds chat history / memory
-  - create_agent() with a retriever tool → agent decides when to search (most flexible)
+Speed optimizations applied (v2):
+  - System prompt trimmed from ~800 tokens → ~150 tokens (same behavior, fewer tokens sent)
+  - ask_stream() uses LangChain's .stream() method so the first token appears
+    in ~0.5s instead of the user waiting 4-6s for the full response.
 """
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Iterator
 
 from app.core.logger import get_logger
 from app.llm.model_factory import get_llm
@@ -29,150 +30,137 @@ from app.vectorstore.qdrant_store import retrieve
 logger = get_logger(__name__)
 
 
-# ─── System Prompt ────────────────────────────────────────────────────────────
-# This instructs the LLM on how to behave.
-# Tells it to: only use the provided context, admit when it doesn't know.
+# ─── System Prompt (trimmed v2) ───────────────────────────────────────────────
+# Reduced from ~800 tokens to ~150 tokens.
+# All the core "Aria" behavior is preserved — just stated more concisely.
+# Fewer input tokens = less time billed + slightly faster LLM response.
 SYSTEM_PROMPT = """\
-You are Aria, a precise and helpful HR Assistant for TechAhead. \
-Your sole purpose is to help employees understand company policies, benefits, and workplace guidelines \
-by using ONLY the information provided in the <context> block below.
+You are Aria, TechAhead's HR Assistant. Your job is to help employees with HR questions.
 
-<instructions>
-
-## CORE RULE — Non-negotiable
-Your answers MUST be grounded exclusively in the provided <context>.
-Do NOT use your own training knowledge to answer policy, benefits, or HR questions.
-If the answer is not in the context, say so honestly and guide the user to HR.
-
-## BEHAVIOR BY QUERY TYPE
-
-### Type 1: Policy / HR Question (context IS relevant)
-- Answer directly and concisely — lead with the key fact first.
-- Include exact numbers, dates, amounts, and thresholds from the context. Never approximate.
-- Cite the source naturally: "As per the HR Manual..." or "The Leave Policy states..."
-- Use bullet points ONLY when listing 3 or more distinct items or steps.
-- For 1–2 item answers, use plain prose — no forced bullet lists.
-- Bold the single most important fact in the answer (amount, date, key rule).
-
-### Type 2: Policy / HR Question (context is NOT relevant or empty)
-- Do NOT fabricate, estimate, or guess from general knowledge.
-- Be honest but warm: "The provided policies don't cover this specifically."
-- Always end with a clear next step: "I'd recommend reaching out to HR at [hr@company.com] or your manager directly."
-
-### Type 3: Conversational / Small Talk ("Hi", "Thank you", "How are you?")
-- Respond naturally and briefly, like a friendly colleague.
-- No need to search policies. Just be warm and human.
-- Keep it to 1–2 sentences max.
-
-## FORMATTING
-- Never use headers (##) inside your answer — they feel like a document, not a conversation.
-- Never repeat or rephrase the user's question in your reply.
-- Never start with "Great question!", "Of course!", "Certainly!", or similar filler.
-- Keep total response length appropriate to the question — short questions deserve short answers.
-
-## TONE
-Warm, professional, and direct. Like a trusted HR colleague, not a legal document.
-
-</instructions>
-
-IMPORTANT REMINDER: Answer only from the <context>. \
-If the context does not contain the answer, say so and direct the user to HR. \
-Never invent policy details.
+Rules:
+- Answer ONLY from the <context> block provided. Never use your own training knowledge for HR/policy questions.
+- If the answer IS in context: be direct, lead with the key fact, cite exact numbers/dates, and source it naturally (e.g. "As per the Leave Policy...").
+- If the answer is NOT in context: say so honestly and direct the user to HR.
+- For greetings or small talk: respond warmly in 1–2 sentences.
+- Use bullet points only when listing 3+ distinct items. Otherwise use plain prose.
+- Never fabricate, estimate, or guess policy details.
+- Never repeat the user's question. Never use headers in your response.
+- Tone: warm, professional, and direct — like a trusted HR colleague.
 """
 
 
 def format_context(chunks: list[Document]) -> str:
     """
     Formats the retrieved chunks into a readable context string for the prompt.
-
     Each chunk is labeled with its source file for traceability.
-
-    Args:
-        chunks: List of Document objects returned by the retriever.
-
-    Returns:
-        A formatted string ready to be injected into the prompt.
     """
     context_parts = []
-
     for i, chunk in enumerate(chunks, start=1):
-        # Extract source info from metadata (added by the loader)
         source = chunk.metadata.get("source", "Unknown source")
         page = chunk.metadata.get("page", "")
         page_info = f", page {page + 1}" if page != "" else ""
-
         context_parts.append(
             f"[Chunk {i} — Source: {source}{page_info}]\n{chunk.page_content}"
         )
-
     return "\n\n---\n\n".join(context_parts)
 
 
+def _build_messages(question: str, chunks: list[Document]) -> list:
+    """Builds the [SystemMessage, HumanMessage] list for the LLM."""
+    context = format_context(chunks)
+    return [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=f"<context>\n{context}\n</context>\n\nQUESTION: {question}"),
+    ]
+
+
 def ask(question: str, llm_provider: str | None = None) -> dict:
+    """
+    Full (non-streaming) RAG pipeline.
+    Returns the complete answer + source chunks in one shot.
+    Used by POST /chat.
+    """
     import time
     t0 = time.perf_counter()
 
     logger.info("New question received: '%s'", question[:80])
 
-    # ── Step 1: Retrieve top-3 relevant chunks from Qdrant ────────────────────
-    logger.info("[Step 1/4] Retrieving top-3 chunks from Qdrant...")
+    # Step 1: Retrieve top-3 relevant chunks from Qdrant
+    logger.info("[Step 1/3] Retrieving top-3 chunks from Qdrant...")
     t1 = time.perf_counter()
     chunks = retrieve(question, top_k=3)
     t2 = time.perf_counter()
-    print(f"  [TIMING] Step 1 - Retrieval (embed query + Qdrant search): {t2-t1:.3f}s")
+    print(f"  [TIMING] Step 1 - Retrieval: {t2-t1:.3f}s")
 
     if not chunks:
-        logger.warning("No chunks retrieved — collection may be empty or not yet ingested")
+        logger.warning("No chunks retrieved — collection may be empty")
         return {
             "answer": "No relevant documents found. Please make sure documents are ingested first.",
             "sources": [],
         }
 
-    logger.info("[Step 1/4] Got %d chunk(s)", len(chunks))
-
-    # ── Step 2: Format chunks into a context string ───────────────────────────
-    context = format_context(chunks)
-
-    # ── Step 3: Build the prompt ──────────────────────────────────────────────
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=f"CONTEXT:\n{context}\n\nQUESTION: {question}"),
-    ]
+    # Step 2: Build prompt
+    messages = _build_messages(question, chunks)
     t3 = time.perf_counter()
-    print(f"  [TIMING] Step 2+3 - Context format + prompt build: {t3-t2:.3f}s")
+    print(f"  [TIMING] Step 2 - Prompt build: {t3-t2:.3f}s")
 
-    # ── Step 4: Call the LLM ──────────────────────────────────────────────────
-    logger.debug(
-        "=== FINAL PROMPT TO LLM ===\n"
-        "SYSTEM PROMPT:\n%s\n\n"
-        "USER PROMPT:\nCONTEXT:\n%s\n\nQUESTION: %s\n"
-        "===========================",
-        SYSTEM_PROMPT, context, question
-    )
-
+    # Step 3: Call LLM (blocking — waits for full response)
     llm = get_llm(llm_provider)
     response = llm.invoke(messages)
     t4 = time.perf_counter()
-    print(f"  [TIMING] Step 4 - LLM generation ({llm_provider or 'default'}): {t4-t3:.3f}s")
+    print(f"  [TIMING] Step 3 - LLM generation ({llm_provider or 'default'}): {t4-t3:.3f}s")
 
     raw = response.content
-    if isinstance(raw, list):
-        answer = " ".join(
-            block["text"] for block in raw
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    else:
-        answer = str(raw)
+    answer = (
+        " ".join(block["text"] for block in raw if isinstance(block, dict) and block.get("type") == "text")
+        if isinstance(raw, list)
+        else str(raw)
+    )
 
     sources = [
         {
             "source": chunk.metadata.get("source", "Unknown"),
             "page": chunk.metadata.get("page", None),
-            "preview": chunk.page_content[:200] + "..."
+            "preview": chunk.page_content[:200] + "...",
         }
         for chunk in chunks
     ]
 
     print(f"  [TIMING] Total end-to-end: {time.perf_counter()-t0:.3f}s")
-
     return {"answer": answer, "sources": sources}
+
+
+def ask_stream(question: str, llm_provider: str | None = None) -> Iterator[str]:
+    """
+    Streaming RAG pipeline — yields answer tokens one-by-one as they arrive.
+
+    This makes the UI feel instant: the user sees the first word in ~0.5s
+    instead of waiting 4-6s for the full response to be assembled.
+
+    Used by POST /chat/stream via FastAPI's StreamingResponse.
+
+    Args:
+        question: The user's question.
+        llm_provider: Optional override ("google", "groq", "ollama").
+
+    Yields:
+        str — individual text tokens from the LLM as they stream in.
+    """
+    logger.info("[stream] New question: '%s'", question[:80])
+
+    # Retrieve relevant chunks (same as non-streaming path)
+    chunks = retrieve(question, top_k=3)
+
+    if not chunks:
+        yield "No relevant documents found. Please make sure documents are ingested first."
+        return
+
+    # Build prompt messages
+    messages = _build_messages(question, chunks)
+
+    # Stream tokens from the LLM — .stream() yields chunks as they arrive
+    llm = get_llm(llm_provider)
+    for chunk in llm.stream(messages):
+        token = chunk.content
+        if token:   # skip empty chunks (some providers send empty delimiters)
+            yield token

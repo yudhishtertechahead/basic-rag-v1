@@ -61,12 +61,12 @@ app.include_router(router)
 @app.on_event("startup")
 async def warmup():
     import asyncio
-    from app.vectorstore.qdrant_store import get_embedding_model, get_qdrant_client, retrieve
-    print("\n[Warmup] Pre-loading embedding model into RAM...")
-    await asyncio.to_thread(get_embedding_model)
+    from app.vectorstore.qdrant_store import _get_st_model, get_qdrant_client, retrieve
+    print("\n[Warmup] Pre-loading SentenceTransformer model into RAM...")
+    await asyncio.to_thread(_get_st_model)
     print("[Warmup] Embedding model ready.")
-    print("[Warmup] Connecting to Qdrant and building vectorstore...")
-    # One dummy query to initialize and cache the QdrantVectorStore object
+    print("[Warmup] Connecting to Qdrant and warming up retriever...")
+    # One dummy query initializes and caches both the model and the Qdrant client
     await asyncio.to_thread(retrieve, "warmup", 1)
     print("[Warmup] Vectorstore ready. Server is fully warmed up!\n")
 

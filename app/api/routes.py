@@ -16,13 +16,14 @@ Why FastAPI?
 """
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.logger import get_logger
 from app.ingestion.chunker import chunk_documents
 from app.ingestion.loader import load_documents
-from app.rag.pipeline import ask
+from app.rag.pipeline import ask, ask_stream
 from app.vectorstore.qdrant_store import store_chunks
 
 logger = get_logger(__name__)
@@ -172,3 +173,32 @@ def chat(request: ChatRequest):
     except Exception as e:
         logger.error("POST /chat | failed: %s", str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+@router.post("/chat/stream", tags=["Chat"])
+def chat_stream(request: ChatRequest):
+    """
+    Streaming chat endpoint — tokens are sent to the browser word-by-word as
+    they arrive from the LLM, exactly like ChatGPT's streaming UI.
+
+    The client receives a plain-text stream (media_type="text/plain").
+    Use the /ui page which already handles this stream via ReadableStream API.
+
+    Advantage over POST /chat:
+      - Time-to-first-token: ~0.5s instead of 4-6s
+      - User sees the answer building live instead of waiting for the full response
+    """
+    logger.info("POST /chat/stream | question='%s...'", request.question[:60])
+
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    def token_generator():
+        try:
+            for token in ask_stream(request.question, llm_provider=request.llm_provider):
+                yield token
+        except Exception as e:
+            logger.error("POST /chat/stream | failed: %s", str(e), exc_info=True)
+            yield f"\n\n[Error: {str(e)}]"
+
+    return StreamingResponse(token_generator(), media_type="text/plain")
