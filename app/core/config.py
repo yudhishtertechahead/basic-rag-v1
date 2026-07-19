@@ -26,8 +26,9 @@ class Settings(BaseSettings):
 
     # ─── Groq (Fast API-based open-source LLMs) ───────────────────────────────
     # Used when LLM_PROVIDER=groq
+    # llama-3.1-8b-instant is ~3-5x faster than 70b-versatile on Groq
     groq_api_key: str | None = None
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "llama-3.1-8b-instant"
 
     # ─── Ollama (Local open-source LLM) ───────────────────────────────────────
     # Used when LLM_PROVIDER=ollama
@@ -49,9 +50,9 @@ class Settings(BaseSettings):
     qdrant_collection: str = "rag_docs"
 
     # ─── Embedding Model ──────────────────────────────────────────────────────
-    # Google's embedding model — used to convert text to vectors
+    # all-MiniLM-L6-v2 — 384-dim SentenceTransformer, fast CPU inference
     # Alternative: "nomic-embed-text" via Ollama for fully local embeddings
-    embedding_model: str = "models/text-embedding-004"
+    embedding_model: str = "all-MiniLM-L6-v2"
 
     # Tells pydantic-settings to read from a .env file in the project root
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

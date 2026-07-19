@@ -41,6 +41,9 @@
 - Tested the `/chat` endpoint with real questions
 - Verified LLM toggle by switching between `LLM_PROVIDER=google` and `LLM_PROVIDER=ollama`
 - Read and understood the comments in every file
+- Added debug logging for retrieval steps to log query, chunks returned, and similarity scores
+- Documented chunking strategy in `docs/chunking_strategy.md`
+- Created and ran test cases for 5 different query scenarios in `tests/test_rag.py`
 
 ---
 

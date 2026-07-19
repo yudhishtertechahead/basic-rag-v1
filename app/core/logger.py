@@ -77,8 +77,17 @@ class ColorFormatter(logging.Formatter):
         if record.exc_info:
             message += "\n" + self.formatException(record.exc_info)
 
+        # Inject Request ID if available (for request tracing)
+        try:
+            from app.core.context import request_id_var
+            req_id = request_id_var.get()
+            req_str = f"{MAGENTA}[{req_id}]{RESET} " if req_id else ""
+        except (ImportError, Exception):
+            req_str = ""
+
         return (
             f"{DIM}[{timestamp}]{RESET} "
+            f"{req_str}"
             f"{color}{BOLD}[{label}]{RESET} "
             f"{DIM}{module_padded}{RESET}  {message}"
         )

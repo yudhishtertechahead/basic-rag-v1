@@ -1,62 +1,39 @@
 """
 ingest.py
 
-Standalone script to run the document ingestion pipeline from the command line.
+Standalone CLI script to run the document ingestion pipeline.
 
 Usage:
     uv run ingest.py
 
-When to run this:
-  - First time setup (after adding docs to docs/ folder)
-  - Whenever you add/update/remove documents in docs/
-  - If you change your Qdrant collection or embedding model
+When to run:
+  - First time setup (after adding docs to the docs/ folder)
+  - Whenever you add, update, or remove documents in docs/
+  - If you change the embedding model or Qdrant collection
 
 What it does:
-  docs/ folder → load → chunk → embed → store in Qdrant Cloud
+  docs/ → extract text → chunk (500 chars, 100 overlap) → embed (all-MiniLM-L6-v2) → upsert into Qdrant
 
-Alternative: You can also trigger ingestion via the API endpoint:
-  POST http://localhost:8000/ingest
-  (requires the FastAPI server to be running first)
+Note: Re-ingest is ADDITIVE (no force_recreate). Existing chunks from OTHER files
+are preserved. Use the API DELETE /documents/{name} to remove a specific document.
 """
 
 from app.core.logger import get_logger, log_banner, log_result, log_step, log_success
-from app.ingestion.chunker import chunk_documents
-from app.ingestion.loader import load_documents
-from app.vectorstore.qdrant_store import store_chunks
+from app.services.ingestion import ingest_folder
 
 logger = get_logger(__name__)
 
 
 def run_ingestion():
-    """
-    Runs the full document ingestion pipeline.
-
-    Steps:
-      1. Load all PDF and Markdown files from docs/
-      2. Split them into chunks (500 chars, 100 overlap)
-      3. Embed each chunk using Google text-embedding-004
-      4. Store all embeddings in Qdrant Cloud
-    """
+    """Runs the full document ingestion pipeline."""
     log_banner("RAG Chatbot — Document Ingestion Pipeline")
 
-    # ── Step 1: Load documents ────────────────────────────────────────────────
-    log_step(1, 3, "Loading documents from docs/ folder...")
-    documents = load_documents()
-    log_success(f"Loaded {len(documents)} document page(s)")
-
-    # ── Step 2: Chunk documents ───────────────────────────────────────────────
-    log_step(2, 3, "Splitting documents into chunks...")
-    chunks = chunk_documents(documents)
-    log_success(f"Created {len(chunks)} chunks")
-    log_result("Chunk size", "500 chars | overlap 100 chars")
-
-    # ── Step 3: Embed and store in Qdrant ────────────────────────────────────
-    log_step(3, 3, "Embedding and storing chunks in Qdrant Cloud...")
-    store_chunks(chunks)
-    log_success(f"Stored {len(chunks)} chunks in Qdrant Cloud")
+    log_step(1, 1, "Loading, chunking, and storing documents from docs/ folder...")
+    total = ingest_folder()
+    log_success(f"Stored {total} chunks in Qdrant (upsert — existing data preserved)")
 
     log_banner("Ingestion Complete!", char="-")
-    log_result("Chunks stored", str(len(chunks)))
+    log_result("Chunks stored", str(total))
     log_result("Next step", "uv run uvicorn main:app --reload")
 
 
