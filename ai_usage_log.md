@@ -1,11 +1,7 @@
 # AI Usage Log
 
 **Project**: RAG Chatbot with Qdrant and FastAPI
-**Student**: [Your Name]
-**Batch**: [Your Batch]
-**Date**: 2026-07-16
 
----
 
 ## Tools Used
 
@@ -57,23 +53,3 @@
 6. **LLM Toggle**: Learned to switch between cloud and local models via config
 
 ---
-
-## Prompts Used
-
-- "Create a production-ready RAG chatbot using Qdrant, FastAPI, and LangChain"
-- "Use Qdrant Cloud free tier instead of Docker"
-- "Add detailed comments explaining alternatives for each approach"
-- "Create a COMMANDS.md with all commands explained"
-
----
-
-## Time Spent
-
-| Task | Hours |
-|------|-------|
-| Understanding the plan | 1h |
-| Setting up environment | 30min |
-| Running ingestion | 30min |
-| Testing the chatbot | 1h |
-| Reading and understanding code | 2h |
-| **Total** | **~5h** |
