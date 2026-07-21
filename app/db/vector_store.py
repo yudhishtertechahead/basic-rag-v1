@@ -167,7 +167,7 @@ def retrieve(query: str, top_k: int = 3) -> list:
         score = hit.score if hasattr(hit, 'score') else 0.0
         payload = hit.payload or {}
         text = payload.get("text", payload.get("page_content", ""))
-        logger.debug("Chunk %d (Score: %.4f): %.100s...", i+1, score, text.replace("\n", " "))
+        logger.debug("\n--- Chunk %d (Score: %.4f) ---\n%s\n", i+1, score, text.strip())
         
         results.append(
             Document(
@@ -206,7 +206,7 @@ def query_with_sources(question: str, top_k: int | None = None) -> list[dict]:
         text = payload.get("text", payload.get("page_content", ""))
         meta = payload.get("metadata", {})
         
-        logger.debug("Chunk %d (Score: %.4f): %.100s...", i+1, score, text.replace("\n", " "))
+        logger.debug("\n--- Chunk %d (Score: %.4f) ---\n%s\n", i+1, score, text.strip())
 
         results.append({
             "text": text,
