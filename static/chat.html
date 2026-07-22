@@ -271,7 +271,8 @@
 <script>
   // ── Config ────────────────────────────────────────────────────────────────
   // Must match the running FastAPI server address
-  const API_URL = "http://localhost:8000/chat/stream";
+  const API_URL = "http://localhost:8000/api/v1/chat/stream";
+  const SESSION_ID = crypto.randomUUID();
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const messagesEl = document.getElementById("messages");
@@ -378,7 +379,7 @@
       const res = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question: question, session_id: SESSION_ID }),
       });
 
       if (!res.ok) {

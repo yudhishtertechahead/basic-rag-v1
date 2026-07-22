@@ -17,16 +17,13 @@ from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from app.core.constants import CHUNK_OVERLAP, CHUNK_SIZE, SUPPORTED_EXTENSIONS
 from app.core.logger import get_logger
 from app.db.vector_store import ingest_chunks
 
 logger = get_logger(__name__)
 
 DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
-
-# Chunk settings (match existing chunker.py settings)
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 100
 
 
 def _extract_text(file_path: str) -> str:
@@ -115,7 +112,7 @@ def ingest_folder(folder_path: str | None = None) -> int:
     total = 0
     for file_path in files:
         ext = file_path.suffix.lower()
-        if ext in (".pdf", ".md", ".txt"):
+        if ext in SUPPORTED_EXTENSIONS:
             try:
                 total += ingest_file(str(file_path))
             except Exception as e:

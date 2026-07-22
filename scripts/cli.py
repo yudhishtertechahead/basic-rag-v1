@@ -17,12 +17,19 @@ The server must be running:
 """
 
 import sys
+import uuid
+from pathlib import Path
+
+# Ensure the root project directory is in sys.path so it can find the 'app' module
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import requests
 
 # FastAPI server URL — must be running
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8000/api/v1"
 CHAT_STREAM_URL = f"{BASE_URL}/chat/stream"
 HEALTH_URL = f"{BASE_URL}/health"
+INGEST_URL = f"{BASE_URL}/ingest"
 
 # ── ANSI colors ────────────────────────────────────────────────────────────────
 GREEN  = "\033[32m"
@@ -45,12 +52,12 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
-def chat(question: str, llm_provider: str) -> None:
+def chat(question: str, llm_provider: str, session_id: str | None = None) -> None:
     """Runs the answer locally directly from rag_service for timing comparison."""
     from app.services.rag_service import ask
     try:
         print(f"{DIM}Thinking locally...{RESET}")
-        result = ask(question, llm_provider)
+        result = ask(question, llm_provider, session_id=session_id)
         answer = strip_markdown(result["answer"])
         print(f"\n{BOLD}{CYAN}Aria:{RESET} {answer}\n")
     except Exception as e:
@@ -112,12 +119,18 @@ def chat_loop() -> None:
         print(f"\n{CYAN}Using Groq llama-3.1-8b-instant...{RESET}\n")
 
     print(f"{DIM}Warming up models (this may take a few seconds)...{RESET}")
-    from app.db.vector_store import _get_embedder, get_qdrant_client
+    from app.db.vector_store import _get_embedder, _get_sparse_embedder, get_qdrant_client
+    from app.services.reranker import _get_reranker
     from app.services.llm.factory import get_llm
+    
     _get_embedder()
+    _get_sparse_embedder()
+    _get_reranker()
     get_qdrant_client()
     get_llm(llm_provider)
     print(f"{GREEN}[OK] Models loaded and ready!{RESET}\n")
+
+    session_id = str(uuid.uuid4())
 
     while True:
         try:
@@ -129,7 +142,7 @@ def chat_loop() -> None:
         if not question:
             continue
 
-        if question.lower() in ("quit", "exit", "bye", "q"):
+        if question.lower() == "quit":
             print(f"\n{DIM}Goodbye!{RESET}\n")
             break
 
@@ -142,7 +155,7 @@ def chat_loop() -> None:
             continue
 
         print(f"{DIM}Thinking...{RESET}")
-        chat(question, llm_provider)
+        chat(question, llm_provider, session_id)
         print()
 
 

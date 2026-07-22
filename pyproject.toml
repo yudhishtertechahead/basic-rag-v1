@@ -1,7 +1,7 @@
 [project]
-name = "basic-rag-chatbot-v1"
-version = "0.1.0"
-description = "Add your description here"
+name = "aria-rag-chatbot"
+version = "2.0.0"
+description = "Production-grade HR RAG Chatbot using Qdrant Hybrid Search, Cross-Encoder Re-ranking, and multi-provider LLM support"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

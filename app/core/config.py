@@ -10,7 +10,10 @@ Why pydantic-settings?
 - Alternative: you could use plain os.getenv() everywhere, but that's messy at scale
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -54,8 +57,8 @@ class Settings(BaseSettings):
     # Alternative: "nomic-embed-text" via Ollama for fully local embeddings
     embedding_model: str = "all-MiniLM-L6-v2"
 
-    # Tells pydantic-settings to read from a .env file in the project root
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Tells pydantic-settings to read from the .env file in the absolute project root
+    model_config = SettingsConfigDict(env_file=str(ROOT_DIR / ".env"), extra="ignore")
 
 
 # Single shared instance — import this anywhere you need config

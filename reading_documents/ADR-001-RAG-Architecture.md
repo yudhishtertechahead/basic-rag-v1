@@ -2,7 +2,7 @@
 ## ADR-001: Selection of Core RAG Components
 
 **Date:** 2026-07-19
-**Status:** Accepted
+**Status:** pending
 
 ### 1. Context
 We need to build a Retrieval-Augmented Generation (RAG) backend that allows employees to query internal HR documents. To do this, we require a vector database for semantic search, an embedding model for text vectorization, and a Large Language Model (LLM) for natural language generation. 

@@ -6,6 +6,8 @@ FastAPI application entry point.
 This file creates the FastAPI app, registers all routes, and configures
 startup behavior (warmup). Keep this file minimal — logic lives in app/.
 
+API is versioned under /api/v1/ — see app/api/v1/router.py.
+
 Run the server:
     uv run uvicorn main:app --reload
     (main = this file, app = the FastAPI instance below)
@@ -18,17 +20,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.router import router  # ← new canonical path (was routes)
+from app.api.v1.router import router as v1_router  # versioned API
+from app.api.router import router as legacy_router  # kept for backward compat
 from app.core.config import settings
 
 # ─── Create FastAPI App ───────────────────────────────────────────────────────
 app = FastAPI(
-    title="RAG Chatbot API",
+    title="Aria — TechAhead HR RAG Chatbot",
     description=(
-        "A Retrieval-Augmented Generation chatbot that answers questions "
-        "from your documents using Qdrant vector search and an LLM of your choice."
+        "A production-grade Retrieval-Augmented Generation chatbot that answers HR "
+        "questions from policy documents using Qdrant Hybrid Search and an LLM of your choice.\n\n"
+        "**API v1:** All endpoints are under `/api/v1/`."
     ),
     version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # ─── CORS Middleware ──────────────────────────────────────────────────────────
@@ -60,7 +66,12 @@ async def request_tracing_middleware(request: Request, call_next):
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ─── Register Routes ──────────────────────────────────────────────────────────
-app.include_router(router)
+# v1 API (canonical, versioned)
+app.include_router(v1_router, prefix="/api/v1")
+
+# Legacy routes (unversioned) — kept for backward compatibility with old chat UI
+# TODO: Remove once static/chat.html is updated to use /api/v1/
+app.include_router(legacy_router)
 
 
 # ─── Startup Warmup ───────────────────────────────────────────────────────────
@@ -77,7 +88,10 @@ async def warmup():
     print("[Warmup] Embedding model ready.")
 
     print("[Warmup] Connecting to Qdrant and warming up retriever...")
-    await asyncio.to_thread(retrieve, "warmup", 1)
+    try:
+        await asyncio.to_thread(retrieve, "warmup", 1)
+    except Exception:
+        pass  # warmup failure is non-fatal — first real query will initialize
     print("[Warmup] Qdrant connected and vectorstore ready.")
 
     print(f"[Warmup] Initializing {settings.llm_provider} LLM provider...")

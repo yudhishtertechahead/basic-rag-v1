@@ -18,6 +18,12 @@ Note: Re-ingest is ADDITIVE (no force_recreate). Existing chunks from OTHER file
 are preserved. Use the API DELETE /documents/{name} to remove a specific document.
 """
 
+import sys
+from pathlib import Path
+
+# Ensure the root project directory is in sys.path so it can find the 'app' module
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from app.core.logger import get_logger, log_banner, log_result, log_step, log_success
 from app.services.ingestion import ingest_folder
 

@@ -21,10 +21,18 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 from functools import lru_cache
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams, SparseVectorParams, Modifier, SparseVector, Prefetch, FusionQuery, Fusion
 from sentence_transformers import SentenceTransformer
+from fastembed import SparseTextEmbedding
 
 from app.core.config import settings
+from app.core.constants import (
+    DENSE_VECTOR_NAME,
+    QDRANT_PAYLOAD_FIELDS,
+    SPARSE_EMBEDDING_MODEL,
+    SPARSE_VECTOR_NAME,
+    VECTOR_DIM,
+)
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -32,9 +40,10 @@ logger = get_logger(__name__)
 # ── Module-level singletons ──────────────────────────────────────────────────
 # Created once at import/startup, reused on every request.
 _embedder: SentenceTransformer | None = None
+_sparse_embedder: SparseTextEmbedding | None = None
 _qdrant_client: QdrantClient | None = None
 
-VECTOR_DIM = 384  # Matches all-MiniLM-L6-v2 output dimension
+
 
 
 def _get_embedder() -> SentenceTransformer:
@@ -46,6 +55,14 @@ def _get_embedder() -> SentenceTransformer:
         logger.info("SentenceTransformer loaded (dim=%d)", VECTOR_DIM)
     return _embedder
 
+def _get_sparse_embedder() -> SparseTextEmbedding:
+    """Returns the cached SparseTextEmbedding (BM25) instance, loading it once."""
+    global _sparse_embedder
+    if _sparse_embedder is None:
+        logger.info("Loading SparseTextEmbedding model: %s", SPARSE_EMBEDDING_MODEL)
+        _sparse_embedder = SparseTextEmbedding(SPARSE_EMBEDDING_MODEL)
+        logger.info("SparseTextEmbedding loaded")
+    return _sparse_embedder
 
 def _embed(texts) -> list:
     """Embed a string or list of strings using the singleton embedder."""
@@ -53,6 +70,13 @@ def _embed(texts) -> list:
     if isinstance(texts, str):
         return model.encode(texts).tolist()
     return model.encode(texts).tolist()
+
+def _embed_sparse(texts) -> list:
+    """Generate sparse BM25 vectors."""
+    model = _get_sparse_embedder()
+    if isinstance(texts, str):
+        return list(model.embed([texts]))
+    return list(model.embed(texts))
 
 
 @lru_cache(maxsize=1)
@@ -65,23 +89,28 @@ def get_qdrant_client() -> QdrantClient:
     return QdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
+        prefer_grpc=True,
     )
 
 
 def ensure_collection() -> None:
     """
-    Creates the Qdrant collection if it doesn't already exist.
-    Does NOT force_recreate — safe to call before every ingest.
+    Creates the Qdrant collection for hybrid search if it doesn't already exist.
     """
     client = get_qdrant_client()
     existing = [c.name for c in client.get_collections().collections]
     if settings.qdrant_collection not in existing:
-        logger.info("Collection '%s' not found — creating...", settings.qdrant_collection)
+        logger.info("Collection '%s' not found — creating hybrid...", settings.qdrant_collection)
         client.create_collection(
             collection_name=settings.qdrant_collection,
-            vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            vectors_config={
+                DENSE_VECTOR_NAME: VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            },
+            sparse_vectors_config={
+                SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF)
+            }
         )
-        logger.info("Collection '%s' created (dim=%d, cosine)", settings.qdrant_collection, VECTOR_DIM)
+        logger.info("Collection '%s' created for Hybrid Search", settings.qdrant_collection)
     else:
         logger.info("Collection '%s' already exists — skipping creation", settings.qdrant_collection)
 
@@ -98,46 +127,39 @@ def has_documents() -> bool:
 
 def ingest_chunks(chunks: list, source: str = "unknown") -> int:
     """
-    Embed a list of text chunks and upsert them into Qdrant.
-    Uses client.upsert() — re-ingest is additive, does NOT wipe the collection.
-
-    Args:
-        chunks: List of text strings to embed and store.
-        source: Source filename to attach as metadata.
-
-    Returns:
-        Number of chunks stored.
+    Embed a list of text chunks (dense + sparse) and upsert them into Qdrant.
     """
     ensure_collection()
     client = get_qdrant_client()
 
-    logger.info("Embedding %d chunks from '%s'...", len(chunks), source)
+    logger.info("Embedding %d chunks from '%s' (Dense + Sparse)...", len(chunks), source)
     embeddings = _embed(chunks)
+    sparse_embeddings = _embed_sparse(chunks)
 
     points = [
         PointStruct(
             id=str(uuid.uuid4()),
-            vector=embeddings[i] if isinstance(embeddings[0], list) else [embeddings[i]],
+            vector={
+                DENSE_VECTOR_NAME: embeddings[i] if isinstance(embeddings[0], list) else [embeddings[i]],
+                SPARSE_VECTOR_NAME: SparseVector(
+                    indices=sparse_embeddings[i].indices.tolist(),
+                    values=sparse_embeddings[i].values.tolist()
+                )
+            },
             payload={"text": chunks[i], "source": source},
         )
         for i in range(len(chunks))
     ]
 
     client.upsert(collection_name=settings.qdrant_collection, points=points)
-    logger.info("Upserted %d points into '%s'", len(chunks), settings.qdrant_collection)
+    logger.info("Upserted %d hybrid points into '%s'", len(chunks), settings.qdrant_collection)
     return len(chunks)
 
 
-def retrieve(query: str, top_k: int = 3) -> list:
+def retrieve(query: str, top_k: int = 3, fetch_multiplier: int = 3) -> list:
     """
-    Fast semantic search in Qdrant.
-
-    Returns a list of LangChain-compatible Document-like objects (dicts with
-    page_content + metadata) so that rag_service.py stays unchanged.
-
-    Speed path:
-      1. Embed with direct SentenceTransformer (no LangChain wrapper)
-      2. client.query_points() raw call (no ORM)
+    Hybrid semantic + keyword search in Qdrant with Reciprocal Rank Fusion.
+    Fetches more chunks internally (top_k * fetch_multiplier) to prepare for re-ranking.
     """
     import time
     from langchain_core.documents import Document
@@ -145,29 +167,43 @@ def retrieve(query: str, top_k: int = 3) -> list:
     t0 = time.perf_counter()
 
     query_vector = _embed(query)
+    sparse_res = _embed_sparse(query)[0]
+    sparse_vector = SparseVector(
+        indices=sparse_res.indices.tolist(),
+        values=sparse_res.values.tolist()
+    )
     t1 = time.perf_counter()
-    logger.debug("[TIMING] embed query: %.3fs", t1 - t0)
+    embed_time = t1 - t0
 
     client = get_qdrant_client()
+    limit = top_k * fetch_multiplier
+    
     hits = client.query_points(
         collection_name=settings.qdrant_collection,
-        query=query_vector,
-        limit=top_k,
-        with_payload=True,
+        prefetch=[
+            Prefetch(
+                query=query_vector,
+                using=DENSE_VECTOR_NAME,
+                limit=limit,
+            ),
+            Prefetch(
+                query=sparse_vector,
+                using=SPARSE_VECTOR_NAME,
+                limit=limit,
+            )
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
+        limit=limit,
+        with_payload=QDRANT_PAYLOAD_FIELDS,
     ).points
     t2 = time.perf_counter()
-    logger.debug("[TIMING] query_points: %.3fs", t2 - t1)
-
-    logger.debug("--- DEBUG LOGGING: RETRIEVAL ---")
-    logger.debug("Query: %s", query)
-    logger.debug("Chunks Returned: %d", len(hits))
+    search_time = t2 - t1
 
     results = []
-    for i, hit in enumerate(hits):
-        score = hit.score if hasattr(hit, 'score') else 0.0
+    for hit in hits:
         payload = hit.payload or {}
         text = payload.get("text", payload.get("page_content", ""))
-        logger.debug("\n--- Chunk %d (Score: %.4f) ---\n%s\n", i+1, score, text.strip())
+        meta = payload.get("metadata", {})
         
         results.append(
             Document(
@@ -176,23 +212,40 @@ def retrieve(query: str, top_k: int = 3) -> list:
             )
         )
 
-    logger.info("Retrieved %d chunk(s) for query", len(results))
-    return results
+    logger.info("Retrieved %d chunk(s) for query via Hybrid Search", len(results))
+    return results, embed_time, search_time
 
 
 def query_with_sources(question: str, top_k: int | None = None) -> list[dict]:
     """
-    Embed question → search Qdrant → return top-K chunks with metadata.
-    Used by rag_service.py for the /chat/stream sources payload.
+    Hybrid search for API sources payload.
     """
     k = top_k or 3
     query_vector = _embed(question)
+    sparse_res = _embed_sparse(question)[0]
+    sparse_vector = SparseVector(
+        indices=sparse_res.indices.tolist(),
+        values=sparse_res.values.tolist()
+    )
+    
     client = get_qdrant_client()
     hits = client.query_points(
         collection_name=settings.qdrant_collection,
-        query=query_vector,
+        prefetch=[
+            Prefetch(
+                query=query_vector,
+                using="dense-text",
+                limit=k,
+            ),
+            Prefetch(
+                query=sparse_vector,
+                using="sparse-text",
+                limit=k,
+            )
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
         limit=k,
-        with_payload=True,
+        with_payload=["text", "source", "page"],
     ).points
 
     logger.debug("--- DEBUG LOGGING: QUERY WITH SOURCES ---")
@@ -206,7 +259,7 @@ def query_with_sources(question: str, top_k: int | None = None) -> list[dict]:
         text = payload.get("text", payload.get("page_content", ""))
         meta = payload.get("metadata", {})
         
-        logger.debug("\n--- Chunk %d (Score: %.4f) ---\n%s\n", i+1, score, text.strip())
+        logger.debug("\n--- Hybrid Chunk %d (Score: %.4f) ---\n%s\n", i+1, score, text.strip())
 
         results.append({
             "text": text,
