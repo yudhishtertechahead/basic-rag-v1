@@ -5,6 +5,8 @@ FastAPI route definitions for API version 1.
 
 Endpoints (all prefixed with /api/v1 by main.py):
   GET  /health        → System status and active LLM model
+  GET  /prompts       → List available prompt templates
+  POST /context       → Retrieve RAG chunks without calling LLM (for UI context panel)
   POST /ingest        → Trigger document ingestion pipeline
   POST /chat          → Full (non-streaming) RAG answer
   POST /chat/stream   → Streaming RAG answer (token-by-token)
@@ -21,8 +23,9 @@ from fastapi.responses import StreamingResponse
 from app.api.v1.schemas import ChatRequest, ChatResponse, HealthResponse, IngestResponse, SourceItem
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.core.prompt import PROMPT_METADATA
 from app.services.ingestion import ingest_folder
-from app.services.rag_service import ask, ask_stream
+from app.services.rag_service import ask, ask_stream, retrieve_with_sources
 
 logger = get_logger(__name__)
 
@@ -62,6 +65,49 @@ def health_check():
         model=model,
         qdrant_collection=settings.qdrant_collection,
     )
+
+
+@router.get("/prompts", tags=["System"])
+def list_prompts():
+    """
+    Returns the list of available prompt templates for the UI dropdown.
+    No LLM call involved — pure metadata.
+    """
+    logger.info("GET /prompts called")
+    return {"prompts": PROMPT_METADATA}
+
+
+@router.post("/context", tags=["Chat"])
+def get_context(request: ChatRequest):
+    """
+    Retrieve relevant document chunks for a question WITHOUT calling the LLM.
+    Used by the UI to populate the 'Retrieved Context' panel in parallel
+    with the streaming chat request — so the user can see what the LLM sees.
+
+    Returns the same chunks (full text) that will be passed to the LLM.
+    """
+    logger.info("POST /context | question='%s...'", request.question[:60])
+
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    try:
+        chunks_text, sources = retrieve_with_sources(request.question)
+        return {
+            "chunks": [
+                {
+                    "index": i + 1,
+                    "source": s["filename"],
+                    "page": s["page"],
+                    "content": chunks_text[i],     # full chunk text (not truncated)
+                    "preview": s["excerpt"],
+                }
+                for i, s in enumerate(sources)
+            ]
+        }
+    except Exception as e:
+        logger.error("POST /context | failed: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Context retrieval failed: {str(e)}")
 
 
 @router.post("/ingest", response_model=IngestResponse, tags=["Ingestion"])
@@ -108,7 +154,12 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        result = ask(request.question, llm_provider=request.llm_provider, session_id=request.session_id)
+        result = ask(
+            request.question,
+            llm_provider=request.llm_provider,
+            session_id=request.session_id,
+            prompt_id=request.prompt_id,
+        )
         logger.info("POST /chat | answered (%d source chunks) [Session: %s]", len(result["sources"]), request.session_id or "none")
 
         return ChatResponse(
@@ -126,8 +177,6 @@ def chat(request: ChatRequest):
 def chat_stream(request: ChatRequest):
     """
     Streaming chat endpoint — tokens sent to the browser word-by-word.
-    Use the /ui page which handles the stream via the Fetch ReadableStream API.
-
     Time-to-first-token: ~0.1-0.5s with Groq llama-3.1-8b-instant.
     """
     logger.info("POST /chat/stream | question='%s...'", request.question[:60])
@@ -137,7 +186,12 @@ def chat_stream(request: ChatRequest):
 
     def token_generator():
         try:
-            for token in ask_stream(request.question, llm_provider=request.llm_provider, session_id=request.session_id):
+            for token in ask_stream(
+                request.question,
+                llm_provider=request.llm_provider,
+                session_id=request.session_id,
+                prompt_id=request.prompt_id,
+            ):
                 yield token
         except Exception as e:
             logger.error("POST /chat/stream | failed: %s", str(e), exc_info=True)

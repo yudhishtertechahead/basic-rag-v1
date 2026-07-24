@@ -30,6 +30,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Session ID for tracking conversation history"
     )
+    prompt_id: str | None = Field(
+        default="default",
+        description="Prompt template ID: 'default', 'concise', 'detailed', or 'strict'"
+    )
 
 
 class SourceItem(BaseModel):

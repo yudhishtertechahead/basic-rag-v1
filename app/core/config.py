@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # ─── Google Gemini (API-based LLM) ────────────────────────────────────────
     # Used when LLM_PROVIDER=google
     google_api_key: str
-    google_model: str = "gemini-3.5-flash"
+    google_model: str = "gemini-3.1-flash-lite"
 
     # ─── Groq (Fast API-based open-source LLMs) ───────────────────────────────
     # Used when LLM_PROVIDER=groq

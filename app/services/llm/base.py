@@ -16,20 +16,20 @@ class BaseLLM(ABC):
     """
 
     @abstractmethod
-    def generate(self, query: str, context: str, history: list[dict[str, str]] | None = None) -> str:
+    def generate(self, query: str, context: str, history: list[dict[str, str]] | None = None, prompt_id: str | None = None) -> str:
         """
         Blocking generation.
         Returns the full answer string.
         """
         ...
 
-    def stream(self, query: str, context: str, history: list[dict[str, str]] | None = None) -> Iterator[str]:
+    def stream(self, query: str, context: str, history: list[dict[str, str]] | None = None, prompt_id: str | None = None) -> Iterator[str]:
         """
         Synchronous streaming — yields tokens one-by-one.
         Default: calls generate() and yields the full response as one chunk.
         Override in subclasses for true token-by-token streaming.
         """
-        yield self.generate(query, context, history)
+        yield self.generate(query, context, history, prompt_id)
         
     @abstractmethod
     def rewrite_query(self, query: str, history: list[dict[str, str]]) -> str:

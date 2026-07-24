@@ -114,7 +114,7 @@ def root():
 @app.get("/ui", tags=["UI"])
 def chat_ui():
     """Serves the HTML chat interface at http://localhost:8000/ui"""
-    return FileResponse("static/chat.html")
+    return FileResponse("static/index.html")
 
 
 # ─── Run directly (for debugging only) ────────────────────────────────────────
